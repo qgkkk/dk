@@ -1,199 +1,189 @@
-'use strict'
 
-const hub_host = 'registry-1.docker.io'
-const auth_url = 'https://auth.docker.io'
-const workers_url = 'https://do.nark.eu.org'
-const workers_host = 'do.nark.eu.org'
-const home_page_url = 'https://qninq.cn/file/html/dockerproxy.html'
-
-/** @type {RequestInit} */
-const PREFLIGHT_INIT = {
-    status: 204,
-    headers: new Headers({
-        'access-control-allow-origin': '*',
-        'access-control-allow-methods': 'GET,POST,PUT,PATCH,TRACE,DELETE,HEAD,OPTIONS',
-        'access-control-max-age': '1728000',
-    }),
-}
-
-/**
- * @param {any} body
- * @param {number} status
- * @param {Object<string, string>} headers
- */
-function makeRes(body, status = 200, headers = {}) {
-    headers['access-control-allow-origin'] = '*'
-    return new Response(body, {status, headers})
-}
-
-
-/**
- * @param {string} urlStr
- */
-function newUrl(urlStr) {
-    try {
-        return new URL(urlStr)
-    } catch (err) {
-        return null
-    }
-}
-
-
-addEventListener('fetch', e => {
-    const ret = fetchHandler(e)
-        .catch(err => makeRes('cfworker error:\n' + err.stack, 502))
-    e.respondWith(ret)
-})
-
-
-/**
- * @param {FetchEvent} e
- */
-async function fetchHandler(e) {
-    const getReqHeader = (key) => e.request.headers.get(key);
-
-    let url = new URL(e.request.url);
-
-    if (url.pathname === '/') {
-        // Fetch and return the home page HTML content with replacement
-        let response = await fetch(home_page_url);
-        let text = await response.text();
-        text = text.replace(/{workers_host}/g, workers_host);
-        return new Response(text, {
-            status: response.status,
-            headers: response.headers
-        });
-    }
-
-    if (url.pathname === '/token') {
-        let token_parameter = {
-            headers: {
-                'Host': 'auth.docker.io',
-                'User-Agent': getReqHeader("User-Agent"),
-                'Accept': getReqHeader("Accept"),
-                'Accept-Language': getReqHeader("Accept-Language"),
-                'Accept-Encoding': getReqHeader("Accept-Encoding"),
-                'Connection': 'keep-alive',
-                'Cache-Control': 'max-age=0'
-            }
-        };
-        let token_url = auth_url + url.pathname + url.search
-        return fetch(new Request(token_url, e.request), token_parameter)
-    }
-
-    url.hostname = hub_host;
-
-    let parameter = {
-        headers: {
-            'Host': hub_host,
-            'User-Agent': getReqHeader("User-Agent"),
-            'Accept': getReqHeader("Accept"),
-            'Accept-Language': getReqHeader("Accept-Language"),
-            'Accept-Encoding': getReqHeader("Accept-Encoding"),
-            'Connection': 'keep-alive',
-            'Cache-Control': 'max-age=0'
-        },
-        cacheTtl: 3600
-    };
-
-    if (e.request.headers.has("Authorization")) {
-        parameter.headers.Authorization = getReqHeader("Authorization");
-    }
-
-    let original_response = await fetch(new Request(url, e.request), parameter)
-    let original_response_clone = original_response.clone();
-    let original_text = original_response_clone.body;
-    let response_headers = original_response.headers;
-    let new_response_headers = new Headers(response_headers);
-    let status = original_response.status;
-
-    if (new_response_headers.get("Www-Authenticate")) {
-        let auth = new_response_headers.get("Www-Authenticate");
-        let re = new RegExp(auth_url, 'g');
-        new_response_headers.set("Www-Authenticate", response_headers.get("Www-Authenticate").replace(re, workers_url));
-    }
-
-    if (new_response_headers.get("Location")) {
-        return httpHandler(e.request, new_response_headers.get("Location"))
-    }
-
-    let response = new Response(original_text, {
-        status,
-        headers: new_response_headers
-    })
-    return response;
-
-}
-
-
-/**
- * @param {Request} req
- * @param {string} pathname
- */
-function httpHandler(req, pathname) {
-    const reqHdrRaw = req.headers
-
-    // preflight
-    if (req.method === 'OPTIONS' &&
-        reqHdrRaw.has('access-control-request-headers')
-    ) {
-        return new Response(null, PREFLIGHT_INIT)
-    }
-
-    let rawLen = ''
-
-    const reqHdrNew = new Headers(reqHdrRaw)
-
-    const refer = reqHdrNew.get('referer')
-
-    let urlStr = pathname
-
-    const urlObj = newUrl(urlStr)
-
-    /** @type {RequestInit} */
-    const reqInit = {
-        method: req.method,
-        headers: reqHdrNew,
-        redirect: 'follow',
-        body: req.body
-    }
-    return proxy(urlObj, reqInit, rawLen, 0)
-}
-
-
-/**
- *
- * @param {URL} urlObj
- * @param {RequestInit} reqInit
- */
-async function proxy(urlObj, reqInit, rawLen) {
-    const res = await fetch(urlObj.href, reqInit)
-    const resHdrOld = res.headers
-    const resHdrNew = new Headers(resHdrOld)
-
-    // verify
-    if (rawLen) {
-        const newLen = resHdrOld.get('content-length') || ''
-        const badLen = (rawLen !== newLen)
-
-        if (badLen) {
-            return makeRes(res.body, 400, {
-                '--error': `bad len: ${newLen}, except: ${rawLen}`,
-                'access-control-expose-headers': '--error',
-            })
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>镜像加速说明</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            background-image: url('https://qninq.cn/api/bingimg/'); /* Replace with your image path */
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
         }
-    }
-    const status = res.status
-    resHdrNew.set('access-control-expose-headers', '*')
-    resHdrNew.set('access-control-allow-origin', '*')
-    resHdrNew.set('Cache-Control', 'max-age=1500')
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.8);
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            font-size: 2em;
+            margin-bottom: 0.5em;
+            color: #007aff;
+        }
+        p {
+            margin-bottom: 1em;
+        }
+        pre {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 20px;
+            border-radius: 8px;
+            overflow-x: auto;
+            position: relative;
+        }
+        pre::before {
+            content: " ";
+            display: block;
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            width: 12px;
+            height: 12px;
+            background: #ff5f56;
+            border-radius: 50%;
+            box-shadow: 20px 0 0 #ffbd2e, 40px 0 0 #27c93f;
+        }
+        code {
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+            font-size: 0.875em;
+        }
+        .copy-button {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: #007aff;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        pre:hover .copy-button {
+            opacity: 1;
+        }
+        /*底部页脚css*/
+        .github-badge {
+          display: inline-block;
+          border-radius: 4px;
+          text-shadow: none;
+          font-size: 12px;
+          color: #fff;
+          line-height: 15px;
+          background-color: #abbac3;
+          margin-bottom: 2px
+        }
+        
+        .github-badge .badge-subject {
+          display: inline-block;
+          background-color: #4d4d4d;
+          padding: 4px 4px 4px 6px;
+          border-top-left-radius: 4px;
+          border-bottom-left-radius: 4px
+        }
+        
+        .github-badge .badge-value {
+          display: inline-block;
+          padding: 4px 6px 4px 4px;
+          border-top-right-radius: 4px;
+          border-bottom-right-radius: 4px
+        }
+        
+        .github-badge .bg-blue {
+          background-color: #007ec6
+        }
+        
+        .github-badge .bg-orange {
+          background-color: #ffa500
+        }
+        
+        .github-badge .bg-green {
+          background-color: #3bca6e
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <center><h1>镜像加速说明</h1></center>
+        <!--统计-->
+<center><div class="github-badge">
+    <span class="badge-subject">PV</span>
 
-    resHdrNew.delete('content-security-policy')
-    resHdrNew.delete('content-security-policy-report-only')
-    resHdrNew.delete('clear-site-data')
-
-    return new Response(res.body, {
-        status,
-        headers: resHdrNew
-    })
+        <span class="badge-value bg-blue" id="page_pv"></span>
+</div> |
+<div class="github-badge">
+    <span class="badge-subject">UV</span>
+        <span class="badge-value bg-green" id="page_uv"></span>
+</div></center>
+        <center><h4>建议自建使用，底部按钮获取代码</h4></center>
+        <h2>为了加速镜像拉取，使用以下命令设置<b>registry mirror</b>：</h2>
+        <pre><code>
+sudo tee /etc/docker/daemon.json &lt;&lt;EOF
+{
+    "registry-mirrors": ["https://yanyu.icu"]
 }
+EOF</code><button class="copy-button" onclick="copyCode(this)">复制代码</button></pre>
+        <pre><code>
+sudo systemctl daemon-reload</code><button class="copy-button" onclick="copyCode(this)">复制代码</button></pre>
+        <pre><code>
+sudo systemctl restart docker</code><button class="copy-button" onclick="copyCode(this)">复制代码</button></pre>
+        <h2>用法：</h2>
+        <h3>原拉取镜像命令：</h3>
+        <pre><code>
+docker pull library/alpine:latest</code><button class="copy-button" onclick="copyCode(this)">复制代码</button></pre>
+        <h3>加速拉取镜像命令：</h3>
+        <pre><code>
+docker pull yanyu.icu/library/alpine:latest</code><button class="copy-button" onclick="copyCode(this)">复制代码</button></pre>
+
+<center><div class="github-badge">
+    <span class="badge-subject">Copyright</span>
+    <a href="https://qninq.cn/" target="_self">
+        <span class="badge-value bg-green">©2024 青柠</span>
+    </a>
+</div> |
+<div class="github-badge">
+    <span class="badge-subject">搭建同款</span>
+    <a href="https://qninq.cn/archives/cfdockerfast.html" target="_blank">
+        <span class="badge-value bg-blue">查看文章</span></a>
+</div> |
+<div class="github-badge">
+    <span class="badge-subject">觉得不错</span>
+    <a href="https://qninq.cn/donate.html" target="_blank">
+        <span class="badge-value bg-blue">点此赞赏</span></a>
+</div> |
+<div class="github-badge">
+    <span class="badge-subject">Powerd By</span>
+    <a href="https://dash.cloudflare.com" target="_blank">
+        <span class="badge-value bg-orange">CloudFlare</span></a>
+</div></center>
+</div>
+    <script defer src="https://qninq.cn/file/js/web_analytics.js" data-base-url="https://analytics.nark.eu.org">></script>
+    <script>
+        function copyCode(button) {
+            const code = button.previousSibling;
+            const textArea = document.createElement('textarea');
+            textArea.value = code.textContent;
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            button.textContent = '已复制';
+            setTimeout(() => {
+                button.textContent = '复制代码';
+            }, 2000);
+        }
+    </script>
+</body>
+</html>
